@@ -9,8 +9,6 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.util.Log;
-import android.view.View;
-import android.widget.Toast;
 
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.gson.Gson;
@@ -32,8 +30,11 @@ import retrofit2.converter.gson.GsonConverterFactory;
 
 public class MainActivity extends AppCompatActivity {
 
-    List<Contact> elementos = new ArrayList<>();
-    ContactAdaptar adaptar;
+    private static final int PAGE_SIZE = 10; // Cantidad de datos por página
+    private int currentPage = 1; // Página actual
+    private boolean isLoading = false; // Controla si se está cargando más datos
+    private List<Contact> elementos = new ArrayList<>();
+    private ContactAdaptar adaptar;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -51,14 +52,30 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-
         AppDatabase db = AppDatabase.getInstance(this);
         ContactDAO contactDAO = db.contactDAO();
 
-
+        // Cargar contactos iniciales desde la base de datos
         List<Contact> contacts = contactDAO.getAll();
         elementos.addAll(contacts);
 
+        // Inicializar RecyclerView
+        setUpRecyclerView();
+
+        // Cargar los primeros datos
+        loadContacts(currentPage);
+
+        // Botón flotante para crear un nuevo contacto
+        FloatingActionButton btnCreateContact = findViewById(R.id.btnCreateContact);
+        btnCreateContact.setOnClickListener(view -> {
+            Intent intent = new Intent(MainActivity.this, CreateContactActivity.class);
+            startActivityForResult(intent, 100);
+        });
+    }
+
+    private void loadContacts(int page) {
+        if (isLoading) return; // Evitar múltiples llamadas
+        isLoading = true;
 
         Retrofit retrofit = new Retrofit.Builder()
                 .baseUrl("https://66d5b903f5859a7042673752.mockapi.io")
@@ -66,86 +83,23 @@ public class MainActivity extends AppCompatActivity {
                 .build();
 
         ContactService service = retrofit.create(ContactService.class);
-
-        service.getAll().enqueue(new Callback< List<Contact> >() {
+        service.getAll(page, PAGE_SIZE).enqueue(new Callback<List<Contact>>() {
             @Override
-            public void onResponse(Call<List<Contact>> call, Response< List<Contact> > response) {
-                //if (response.code() == 200)
-                Log.i("MAIN_APP", String.valueOf(response.code()));
-                if (response.isSuccessful()){
-                    //elementos = response.body();
-                    elementos.clear();
+            public void onResponse(Call<List<Contact>> call, Response<List<Contact>> response) {
+                isLoading = false;
+                if (response.isSuccessful()) {
                     elementos.addAll(response.body());
                     adaptar.notifyDataSetChanged();
-
-                    for(Contact contact: response.body()) {
-                        Contact localContact = contactDAO.findRemote(contact.id);
-                        if (localContact == null) {
-                            contactDAO.insert(contact);
-                        }
-                    }
-
                 }
-                // aca puedo trabajar con el resultado
             }
 
             @Override
             public void onFailure(Call<List<Contact>> call, Throwable throwable) {
+                isLoading = false;
                 Log.e("MAIN_APP", throwable.getMessage());
             }
         });
-
-        setUpRecyclerView();
-
-        FloatingActionButton btnCreateContact = findViewById(R.id.btnCreateContact);
-        btnCreateContact.setOnClickListener(view -> {
-            Intent intent = new Intent(MainActivity.this, CreateContactActivity.class);
-            startActivityForResult(intent, 100);
-        });
-
-        Log.i("MAIN_APP", new Gson().toJson(contacts));
-
-        for (Contact contact: contacts) {
-            if (contact.id != 0) continue;
-            service.create(contact).enqueue(new Callback<Contact>() {
-                @Override
-                public void onResponse(Call<Contact> call, Response<Contact> response) {
-                    Log.i("MAIN_APP", String.valueOf(response.code()));
-
-                    if (response.isSuccessful()) {
-
-                        Contact newContact = response.body();
-
-                        Intent intent = getIntent();
-                        intent.putExtra("CONTACT", new Gson().toJson(newContact));
-                        contactDAO.update(contact.localId, newContact.id);
-
-                    }
-
-                }
-
-                @Override
-                public void onFailure(Call<Contact> call, Throwable throwable) {
-                    Log.e("MAIN_APP", throwable.getMessage());
-                }
-            });
-        }
-
     }
-
-     @Override
-     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-         super.onActivityResult(requestCode, resultCode, data);
-
-         if (requestCode == 100 && resultCode == 100) {
-             String contactJson = data.getStringExtra("CONTACT");
-             Contact contact = new Gson().fromJson(contactJson, Contact.class);
-
-             elementos.add(contact);
-             adaptar.notifyDataSetChanged();
-         }
-
-     }
 
     private void setUpRecyclerView() {
         RecyclerView rvContacts = findViewById(R.id.rvContacts);
@@ -153,5 +107,31 @@ public class MainActivity extends AppCompatActivity {
 
         adaptar = new ContactAdaptar(elementos);
         rvContacts.setAdapter(adaptar);
+
+        rvContacts.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
+                super.onScrolled(recyclerView, dx, dy);
+                LinearLayoutManager layoutManager = (LinearLayoutManager) recyclerView.getLayoutManager();
+                if (layoutManager != null && layoutManager.findLastCompletelyVisibleItemPosition() == elementos.size() - 1) {
+                    // Si hemos llegado al final de la lista, cargar más datos
+                    currentPage++;
+                    loadContacts(currentPage);
+                }
+            }
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == 100 && resultCode == 100) {
+            String contactJson = data.getStringExtra("CONTACT");
+            Contact contact = new Gson().fromJson(contactJson, Contact.class);
+
+            elementos.add(contact);
+            adaptar.notifyDataSetChanged();
+        }
     }
 }
